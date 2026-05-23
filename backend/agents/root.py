@@ -31,10 +31,8 @@ async def _process_claim(
     cache: VerdictCache,
     out_queue: asyncio.Queue,
 ) -> None:
-    if deduper.seen(claim.text):
-        log.debug("dedup suppressed: %s", claim.text[:60])
-        return
-
+    # Caller (process_chunk) already ran dedup before scheduling this task.
+    del deduper  # kept in signature for future use; suppress unused warning
     cached = await cache.get(claim.text)
     if cached:
         await out_queue.put(
@@ -53,8 +51,22 @@ async def _process_claim(
     )
 
     graph = get_graph()
-    evidence = await graph.gather_evidence(claim.text)
-    final = await graph.adjudicate(claim, evidence)
+    try:
+        evidence = await asyncio.wait_for(graph.gather_evidence(claim.text), timeout=6.0)
+    except asyncio.TimeoutError:
+        evidence = []
+        log.warning("evidence gather timed out for claim: %s", claim.text[:60])
+    try:
+        final = await asyncio.wait_for(graph.adjudicate(claim, evidence), timeout=4.0)
+    except asyncio.TimeoutError:
+        from backend.schemas import Verdict
+        final = Verdict(
+            claim_id=claim.claim_id,
+            status="yellow",
+            summary="Verdict timed out.",
+            citations=evidence,
+        )
+        log.warning("adjudicate timed out for claim: %s", claim.text[:60])
     await cache.put(claim.text, final)
     await out_queue.put(
         OverlayEvent(event="verdict", session_id=session_id, claim=claim, verdict=final)
@@ -70,8 +82,15 @@ async def process_chunk(
     cache: VerdictCache,
     out_queue: asyncio.Queue,
     max_claims_remaining: int,
+    background_tasks: list[asyncio.Task],
 ) -> int:
-    """Run transcribe → extract → fan-out for one chunk. Returns claims processed."""
+    """Run transcribe → extract → fan-out for one chunk. Returns claims processed.
+
+    Per-claim search/verdict work is fire-and-forget — appended to
+    `background_tasks` so run_session can await them at end-of-session, but
+    not blocking this chunk's return. That way chunk N+1 can start
+    transcribing while chunk N's verdicts are still resolving.
+    """
     transcription = await transcriber.transcribe(audio_bytes, mime_type=chunk.mime_type)
     if not transcription.text.strip():
         return 0
@@ -85,26 +104,27 @@ async def process_chunk(
     )
 
     processed = 0
-    claim_tasks = []
     for claim in claims:
         if processed >= max_claims_remaining:
             break
         if not claim.check_worthy:
             continue
+        if deduper.seen(claim.text):
+            continue
         context.update_context(session_id, speaker=claim.speaker, claim_text=claim.text)
-        claim_tasks.append(
-            _process_claim(
-                session_id=session_id,
-                claim=claim,
-                deduper=deduper,
-                cache=cache,
-                out_queue=out_queue,
+        background_tasks.append(
+            asyncio.create_task(
+                _process_claim(
+                    session_id=session_id,
+                    claim=claim,
+                    deduper=deduper,
+                    cache=cache,
+                    out_queue=out_queue,
+                )
             )
         )
         processed += 1
 
-    if claim_tasks:
-        await asyncio.gather(*claim_tasks, return_exceptions=True)
     return processed
 
 
@@ -119,6 +139,7 @@ async def run_session(
     deduper = ClaimDeduper()
     cache = VerdictCache()
     claims_processed = 0
+    background_tasks: list[asyncio.Task] = []
 
     try:
         async for chunk, data in chunks:
@@ -135,6 +156,7 @@ async def run_session(
                     cache=cache,
                     out_queue=out_queue,
                     max_claims_remaining=remaining,
+                    background_tasks=background_tasks,
                 )
             except Exception as exc:
                 log.exception("chunk %s failed: %s", chunk.chunk_id, exc)
@@ -142,5 +164,9 @@ async def run_session(
                     OverlayEvent(event="error", session_id=session_id, message=str(exc))
                 )
     finally:
+        # Drain in-flight claim processing so all verdicts make it onto the
+        # SSE stream before we emit session_ended.
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         context.reset_context(session_id)
         await out_queue.put(OverlayEvent(event="session_ended", session_id=session_id))
