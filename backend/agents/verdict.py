@@ -9,6 +9,23 @@ from backend.schemas import Claim, SearchEvidence, Verdict
 
 log = logging.getLogger(__name__)
 
+_logged_model_version = False
+
+
+def _log_model_version_once(model_version: str | None) -> None:
+    """Log the resolved Gemini model_version on the first response.
+
+    `gemini-flash-latest` is a server-side alias; the actual concrete
+    version is only visible in the response metadata. Logging once per
+    process is enough to verify what Vertex routed us to.
+    """
+    global _logged_model_version
+    if _logged_model_version or not model_version:
+        return
+    log.info("gemini resolved model_version=%s", model_version)
+    _logged_model_version = True
+
+
 _VERDICT_PROMPT = """You are a fact-check adjudicator. Decide a verdict for a claim
 given the evidence below.
 
@@ -68,6 +85,7 @@ async def adjudicate(claim: Claim, evidence: list[SearchEvidence]) -> Verdict:
                 temperature=0.0,
             ),
         )
+        _log_model_version_once(getattr(response, "model_version", None))
         parsed = json.loads(response.text or "{}")
     except Exception as exc:
         log.warning("verdict adjudication failed: %s", exc)
