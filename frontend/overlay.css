@@ -50,7 +50,8 @@ body {
   font: inherit;
 }
 
-#session-form button {
+#session-form button,
+#session-form select {
   padding: 0.5rem 0.9rem;
   border: 1px solid var(--border);
   background: var(--bg);
@@ -60,7 +61,8 @@ body {
   font: inherit;
 }
 
-#session-form button:hover { background: #1c2026; }
+#session-form button:hover,
+#session-form select:hover { background: #1c2026; }
 
 .status {
   font-size: 0.85rem;

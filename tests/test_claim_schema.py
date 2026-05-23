@@ -1,5 +1,6 @@
 from backend.schemas import (
     Claim,
+    IngestionMode,
     OverlayEvent,
     SearchEvidence,
     SessionRequest,
@@ -28,6 +29,16 @@ def test_overlay_event_minimal():
 def test_session_request_kind_optional():
     r = SessionRequest(youtube_url="https://youtu.be/abc")
     assert r.kind is None
+
+
+def test_session_request_default_mode_is_audio():
+    r = SessionRequest(youtube_url="https://youtu.be/abc")
+    assert r.mode == IngestionMode.AUDIO
+
+
+def test_session_request_accepts_transcript_mode():
+    r = SessionRequest(youtube_url="https://youtu.be/abc", mode="transcript")
+    assert r.mode == IngestionMode.TRANSCRIPT
 
 
 def test_evidence_default_supports():

@@ -9,6 +9,7 @@ const DISPLAY_HOLD_SECONDS = 8;
 const els = {
   form: document.getElementById('session-form'),
   url: document.getElementById('url'),
+  mode: document.getElementById('mode'),
   stop: document.getElementById('stop'),
   status: document.getElementById('status'),
   overlay: document.getElementById('overlay-layer'),
@@ -63,12 +64,13 @@ async function startSession(url) {
   if (!videoId) { setStatus('invalid URL', 'error'); return; }
   mountPlayer(videoId);
 
+  const mode = els.mode?.value ?? 'audio';
   let res;
   try {
     res = await fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ youtube_url: url }),
+      body: JSON.stringify({ youtube_url: url, mode }),
     });
   } catch (e) { setStatus(`network: ${e.message}`, 'error'); return; }
   if (!res.ok) {
@@ -88,7 +90,7 @@ async function startSession(url) {
   els.claimList.innerHTML = '';
   els.overlay.innerHTML = '';
 
-  setStatus(`${body.kind} · ${body.title ?? 'session active'}`, 'live');
+  setStatus(`${body.kind} · ${mode} · ${body.title ?? 'session active'}`, 'live');
   openStream();
   startRenderLoop();
 }

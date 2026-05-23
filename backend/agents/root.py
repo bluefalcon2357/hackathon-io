@@ -61,27 +61,27 @@ async def _process_claim(
     )
 
 
-async def process_chunk(
+async def _process_text(
     *,
     session_id: str,
     chunk: Chunk,
-    audio_bytes: bytes,
+    transcript: str,
+    speaker: str | None,
     deduper: ClaimDeduper,
     cache: VerdictCache,
     out_queue: asyncio.Queue,
     max_claims_remaining: int,
 ) -> int:
-    """Run transcribe → extract → fan-out for one chunk. Returns claims processed."""
-    transcription = await transcriber.transcribe(audio_bytes, mime_type=chunk.mime_type)
-    if not transcription.text.strip():
+    """Run extract → fan-out for already-transcribed text. Returns claims processed."""
+    if not transcript.strip():
         return 0
 
     claims = await get_graph().extract(
         chunk_id=chunk.chunk_id,
-        transcript=transcription.text,
+        transcript=transcript,
         t_start=chunk.t_start,
         t_end=chunk.t_end,
-        speaker=transcription.speaker,
+        speaker=speaker,
     )
 
     processed = 0
@@ -108,6 +108,30 @@ async def process_chunk(
     return processed
 
 
+async def process_chunk(
+    *,
+    session_id: str,
+    chunk: Chunk,
+    audio_bytes: bytes,
+    deduper: ClaimDeduper,
+    cache: VerdictCache,
+    out_queue: asyncio.Queue,
+    max_claims_remaining: int,
+) -> int:
+    """Run transcribe → extract → fan-out for one audio chunk."""
+    transcription = await transcriber.transcribe(audio_bytes, mime_type=chunk.mime_type)
+    return await _process_text(
+        session_id=session_id,
+        chunk=chunk,
+        transcript=transcription.text,
+        speaker=transcription.speaker,
+        deduper=deduper,
+        cache=cache,
+        out_queue=out_queue,
+        max_claims_remaining=max_claims_remaining,
+    )
+
+
 async def run_session(
     *,
     session_id: str,
@@ -115,7 +139,7 @@ async def run_session(
     out_queue: asyncio.Queue,
     max_claims: int,
 ) -> None:
-    """Drive the full per-chunk pipeline. Pushes OverlayEvents into out_queue."""
+    """Drive the full per-chunk pipeline for audio mode."""
     deduper = ClaimDeduper()
     cache = VerdictCache()
     claims_processed = 0
@@ -138,6 +162,45 @@ async def run_session(
                 )
             except Exception as exc:
                 log.exception("chunk %s failed: %s", chunk.chunk_id, exc)
+                await out_queue.put(
+                    OverlayEvent(event="error", session_id=session_id, message=str(exc))
+                )
+    finally:
+        context.reset_context(session_id)
+        await out_queue.put(OverlayEvent(event="session_ended", session_id=session_id))
+
+
+async def run_transcript_session(
+    *,
+    session_id: str,
+    statements: AsyncIterator[tuple[Chunk, str]],
+    out_queue: asyncio.Queue,
+    max_claims: int,
+) -> None:
+    """Drive the pipeline for transcript mode — text in, no audio transcription."""
+    deduper = ClaimDeduper()
+    cache = VerdictCache()
+    claims_processed = 0
+
+    try:
+        async for chunk, text in statements:
+            remaining = max_claims - claims_processed
+            if remaining <= 0:
+                log.info("session %s hit claim cap (%d)", session_id, max_claims)
+                break
+            try:
+                claims_processed += await _process_text(
+                    session_id=session_id,
+                    chunk=chunk,
+                    transcript=text,
+                    speaker=None,
+                    deduper=deduper,
+                    cache=cache,
+                    out_queue=out_queue,
+                    max_claims_remaining=remaining,
+                )
+            except Exception as exc:
+                log.exception("statement %s failed: %s", chunk.chunk_id, exc)
                 await out_queue.put(
                     OverlayEvent(event="error", session_id=session_id, message=str(exc))
                 )
