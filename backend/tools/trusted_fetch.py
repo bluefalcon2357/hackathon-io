@@ -23,7 +23,10 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-_UA = "factcheck-overlay/0.1 (+https://github.com/bluefalcon2357/hackathon-io)"
+# Wikipedia requires a descriptive User-Agent per their UA policy
+# (https://meta.wikimedia.org/wiki/User-Agent_policy). A generic UA gets 403'd.
+_UA = "factcheck-overlay/0.1 (https://github.com/bluefalcon2357/hackathon-io; hackathon@example.com)"
+_HEADERS = {"User-Agent": _UA, "Accept": "application/json"}
 
 
 def _domain_of(url: str) -> str:
@@ -47,6 +50,7 @@ async def _fetch_wikipedia(client: httpx.AsyncClient, claim: str) -> tuple[str, 
                 "srlimit": 1,
                 "utf8": 1,
             },
+            headers=_HEADERS,
         )
         data = resp.json()
         hits = (data.get("query") or {}).get("search") or []
@@ -55,6 +59,7 @@ async def _fetch_wikipedia(client: httpx.AsyncClient, claim: str) -> tuple[str, 
         title = hits[0]["title"]
         summary = await client.get(
             f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote_plus(title)}",
+            headers=_HEADERS,
         )
         sdata = summary.json()
         extract = (sdata.get("extract") or "").strip()
