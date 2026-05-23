@@ -108,49 +108,27 @@ class AdkFactCheckGraph:
         )
 
     async def gather_evidence(self, claim_text: str) -> list[SearchEvidence]:
-        if self._adk_graph is None:
-            import asyncio
+        """Deterministic fan-out over search + trusted source.
 
-            results = await asyncio.gather(
-                search.search_claim(claim_text),
-                trusted_source.check_trusted(claim_text),
-                return_exceptions=True,
-            )
-            return [r for r in results if isinstance(r, SearchEvidence)]
+        Earlier this routed through an ADK LlmAgent + FunctionTool, which
+        triggered an LLM "tool-use" reasoning loop: the LLM kept trying query
+        variants ("conflict lurches", "lurches toward", ...) up to AFC's
+        default cap of 10 calls per claim. ~40s and 10x cost per claim.
 
-        try:
-            from google.adk.runners import InMemoryRunner  # type: ignore
-            from google.genai import types  # type: ignore
+        The leaf evidence fetchers (search.search_claim, trusted_source.
+        check_trusted) are already structured calls — they don't need an LLM
+        to decide whether or how to invoke them. asyncio.gather gives us the
+        same parallel fan-out without any loop. The ADK graph is still
+        constructed by _try_build_adk_graph for future use.
+        """
+        import asyncio
 
-            runner = InMemoryRunner(agent=self._adk_graph, app_name="factcheck")
-            session = await runner.session_service.create_session(
-                app_name="factcheck", user_id="local"
-            )
-            evidence: list[SearchEvidence] = []
-            async for event in runner.run_async(
-                user_id="local",
-                session_id=session.id,
-                new_message=types.Content(
-                    role="user", parts=[types.Part.from_text(text=claim_text)]
-                ),
-            ):
-                fr = getattr(event, "function_response", None)
-                if fr and isinstance(fr.response, dict):
-                    try:
-                        evidence.append(SearchEvidence(**fr.response))
-                    except Exception:
-                        pass
-            return evidence
-        except Exception as exc:
-            log.warning("ADK runner failed (%s); falling back to direct gather", exc)
-            import asyncio
-
-            results = await asyncio.gather(
-                search.search_claim(claim_text),
-                trusted_source.check_trusted(claim_text),
-                return_exceptions=True,
-            )
-            return [r for r in results if isinstance(r, SearchEvidence)]
+        results = await asyncio.gather(
+            search.search_claim(claim_text),
+            trusted_source.check_trusted(claim_text),
+            return_exceptions=True,
+        )
+        return [r for r in results if isinstance(r, SearchEvidence)]
 
     async def adjudicate(self, claim: Claim, evidence: list[SearchEvidence]) -> Verdict:
         return await verdict.adjudicate(claim, evidence)

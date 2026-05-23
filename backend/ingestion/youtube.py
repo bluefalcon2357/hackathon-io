@@ -1,8 +1,7 @@
 import asyncio
+import json
 import logging
 import os
-
-import yt_dlp
 
 from backend.schemas import StreamKind
 
@@ -14,54 +13,60 @@ _DEFAULT_UA = (
 )
 
 
-def _ydl_opts() -> dict:
-    opts: dict = {
-        "quiet": True,
-        "no_warnings": True,
-        "skip_download": True,
-        "extract_flat": False,
-        "geo_bypass": True,
-        "nocheckcertificate": True,
-        "retries": 3,
-        "extractor_retries": 3,
-        "http_headers": {
-            "User-Agent": os.environ.get("YT_DLP_USER_AGENT", _DEFAULT_UA),
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
+def _ydl_cli_args(url: str) -> list[str]:
+    """Build yt-dlp CLI args. We invoke yt-dlp as a subprocess rather than
+    in-process for two reasons:
+      1. yt-dlp does TTY/stdin operations on import that fail with [Errno 22]
+         in non-TTY environments (Cloud Run) when run inside asyncio.to_thread.
+      2. Process isolation means a single bad URL can't corrupt the parent
+         interpreter's state.
+    """
+    args = [
+        "yt-dlp",
+        "--quiet",
+        "--no-warnings",
+        "--skip-download",
+        "--no-playlist",
+        "--dump-single-json",
+        "--geo-bypass",
+        "--no-check-certificate",
+        "--retries", "3",
+        "--user-agent", os.environ.get("YT_DLP_USER_AGENT", _DEFAULT_UA),
+    ]
     cookies_file = os.environ.get("YT_DLP_COOKIES")
     if cookies_file and os.path.exists(cookies_file):
-        opts["cookiefile"] = cookies_file
+        args.extend(["--cookies", cookies_file])
         log.info("yt-dlp using cookies file %s", cookies_file)
-    return opts
-
-
-def _probe_sync(url: str) -> dict:
-    with yt_dlp.YoutubeDL(_ydl_opts()) as ydl:
-        return ydl.extract_info(url, download=False)
+    args.append(url)
+    return args
 
 
 async def probe(url: str) -> dict:
-    """Return yt-dlp metadata for a YouTube URL. Runs sync yt-dlp in a thread."""
-    return await asyncio.to_thread(_probe_sync, url)
-
-
-async def classify(url: str) -> tuple[StreamKind, dict]:
-    """Detect whether the URL is live or recorded, and return (kind, metadata).
-
-    Raises a clear exception on yt-dlp errors so callers can surface them to the
-    user (Cloud Run egress IPs commonly trigger YouTube's bot-protection wall;
-    the user fixes this by mounting cookies via the YT_DLP_COOKIES env var)."""
-    try:
-        info = await probe(url)
-    except yt_dlp.utils.DownloadError as exc:
-        msg = str(exc)
-        if "Sign in to confirm" in msg or "bot" in msg.lower():
+    """Resolve YouTube metadata via the yt-dlp CLI."""
+    proc = await asyncio.create_subprocess_exec(
+        *_ydl_cli_args(url),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.DEVNULL,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="replace").strip()
+        if "Sign in to confirm" in err or "bot" in err.lower():
             raise IngestionError(
                 "YouTube is blocking this server's IP (bot check). "
                 "Mount a cookies.txt file and set YT_DLP_COOKIES to its path."
-            ) from exc
-        raise IngestionError(f"yt-dlp could not resolve URL: {msg}") from exc
+            )
+        raise IngestionError(f"yt-dlp could not resolve URL: {err[:500]}")
+    try:
+        return json.loads(stdout.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError as exc:
+        raise IngestionError(f"yt-dlp returned non-JSON output: {exc}") from exc
+
+
+async def classify(url: str) -> tuple[StreamKind, dict]:
+    """Detect whether the URL is live or recorded, and return (kind, metadata)."""
+    info = await probe(url)
     is_live = bool(info.get("is_live")) or info.get("live_status") in {
         "is_live",
         "is_upcoming",
