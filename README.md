@@ -95,3 +95,27 @@ Cloud Run service and Pub/Sub topics.
 
 CI: `cloudbuild.yaml` does the same build + deploy step; wire to a Cloud Build
 trigger on push to `main`.
+
+### Working around YouTube's bot wall
+
+Cloud Run egress IPs are frequently flagged by YouTube. Symptom: every session
+ends immediately with an error pill saying "YouTube is blocking this server's
+IP (bot check)". Fix: mount a real browser's cookies and tell `yt-dlp` to use
+them.
+
+```bash
+# 1. Export cookies (Netscape format) from a logged-in browser session.
+#    Easiest: install a "Get cookies.txt" browser extension and save the
+#    YouTube cookies.
+
+# 2. Upload as a Secret Manager secret.
+gcloud secrets create yt-cookies --replication-policy=automatic
+gcloud secrets versions add yt-cookies --data-file=cookies.txt
+
+# 3. Re-deploy with the secret mounted as a file + YT_DLP_COOKIES pointing at it.
+gcloud run services update hackathon-io --region $VERTEX_LOCATION \
+  --update-secrets=/secrets/yt-cookies/cookies.txt=yt-cookies:latest \
+  --update-env-vars=YT_DLP_COOKIES=/secrets/yt-cookies/cookies.txt
+```
+
+Refresh the cookie file when it expires.

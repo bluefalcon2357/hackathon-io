@@ -6,8 +6,9 @@ import logging
 
 from backend.agents import root
 from backend.config import get_settings
-from backend.ingestion import live_hls, recorded
+from backend.ingestion import live_hls, recorded, youtube
 from backend.ingestion.chunker import cleanup_session
+from backend.ingestion.youtube import IngestionError
 from backend.runtime.session_manager import Session
 from backend.schemas import OverlayEvent, StreamKind
 
@@ -17,6 +18,28 @@ log = logging.getLogger(__name__)
 async def run(session: Session) -> None:
     settings = get_settings()
     await session.emit(OverlayEvent(event="session_started", session_id=session.session_id))
+
+    try:
+        kind, _info = await youtube.classify(session.youtube_url)
+        session.kind = kind
+    except IngestionError as exc:
+        log.warning("session %s ingestion error: %s", session.session_id, exc)
+        await session.emit(
+            OverlayEvent(event="error", session_id=session.session_id, message=str(exc))
+        )
+        await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
+        return
+    except Exception as exc:
+        log.exception("session %s classify crashed: %s", session.session_id, exc)
+        await session.emit(
+            OverlayEvent(
+                event="error",
+                session_id=session.session_id,
+                message=f"Could not load YouTube URL: {exc}",
+            )
+        )
+        await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
+        return
 
     if session.kind == StreamKind.LIVE:
         chunks = live_hls.stream_live(

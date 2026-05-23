@@ -22,6 +22,7 @@ let session = null;        // { sessionId, kind, startedAt }
 let events = [];           // verdict events with t_start/t_end
 let evtSource = null;
 let renderTimer = null;
+let sawError = false;
 
 function setStatus(text, mode = 'idle') {
   els.status.textContent = text;
@@ -70,11 +71,20 @@ async function startSession(url) {
       body: JSON.stringify({ youtube_url: url }),
     });
   } catch (e) { setStatus(`network: ${e.message}`, 'error'); return; }
-  if (!res.ok) { setStatus(`error ${res.status}`, 'error'); return; }
+  if (!res.ok) {
+    let detail = `error ${res.status}`;
+    try {
+      const err = await res.json();
+      detail = err.detail || err.error || detail;
+    } catch (_) {}
+    setStatus(detail, 'error');
+    return;
+  }
   const body = await res.json();
 
   session = { sessionId: body.session_id, kind: body.kind, startedAt: Date.now() };
   events = [];
+  sawError = false;
   els.claimList.innerHTML = '';
   els.overlay.innerHTML = '';
 
@@ -101,15 +111,31 @@ function openStream() {
   });
 
   evtSource.addEventListener('error', (e) => {
-    if (e.data) {
-      try { setStatus(JSON.parse(e.data).message ?? 'error', 'error'); } catch (_) {}
-    }
+    // EventSource fires this on both server-sent `event: error` payloads AND on
+    // raw transport errors (no e.data). Only the former carries info worth
+    // showing in the sidebar.
+    if (!e.data) return;
+    let msg = 'error';
+    try { msg = JSON.parse(e.data).message ?? 'error'; } catch (_) {}
+    setStatus(msg, 'error');
+    sawError = true;
+    appendErrorToLog(msg);
   });
 
   evtSource.addEventListener('session_ended', () => {
-    setStatus('session ended', 'idle');
+    if (!sawError) setStatus('session ended', 'idle');
     evtSource.close();
   });
+}
+
+function appendErrorToLog(message) {
+  const li = document.createElement('li');
+  li.className = 'red';
+  li.innerHTML = `
+    <span class="timestamp">error</span>
+    <span class="text">${escapeHtml(message)}</span>
+  `;
+  els.claimList.prepend(li);
 }
 
 function appendToLog(data, status, summary) {
