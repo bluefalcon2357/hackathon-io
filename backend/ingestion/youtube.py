@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import shutil
+import tempfile
 
 from backend.schemas import StreamKind
 
@@ -11,6 +13,33 @@ _DEFAULT_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+_cookies_cache: str | None = None
+_cookies_cache_resolved = False
+
+
+def _writable_cookies_path() -> str | None:
+    """Cloud Run mounts secrets read-only, but yt-dlp writes refreshed cookies
+    back after YouTube rotates them on each request. Copy the secret-mounted
+    file into tmpfs on first use so yt-dlp's save_cookies() succeeds."""
+    global _cookies_cache, _cookies_cache_resolved
+    if _cookies_cache_resolved:
+        return _cookies_cache
+
+    src = os.environ.get("YT_DLP_COOKIES")
+    if not src or not os.path.exists(src):
+        _cookies_cache_resolved = True
+        return None
+    if os.access(src, os.W_OK):
+        _cookies_cache = src
+    else:
+        dst = os.path.join(tempfile.gettempdir(), "yt-cookies.txt")
+        shutil.copyfile(src, dst)
+        os.chmod(dst, 0o600)
+        log.info("copied read-only cookies %s -> %s (yt-dlp needs write access)", src, dst)
+        _cookies_cache = dst
+    _cookies_cache_resolved = True
+    return _cookies_cache
 
 
 def _ydl_cli_args(url: str) -> list[str]:
@@ -33,8 +62,8 @@ def _ydl_cli_args(url: str) -> list[str]:
         "--retries", "3",
         "--user-agent", os.environ.get("YT_DLP_USER_AGENT", _DEFAULT_UA),
     ]
-    cookies_file = os.environ.get("YT_DLP_COOKIES")
-    if cookies_file and os.path.exists(cookies_file):
+    cookies_file = _writable_cookies_path()
+    if cookies_file:
         args.extend(["--cookies", cookies_file])
         log.info("yt-dlp using cookies file %s", cookies_file)
     args.append(url)
