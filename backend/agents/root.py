@@ -85,15 +85,14 @@ async def _process_text(
     max_claims_remaining: int,
     background_tasks: list[asyncio.Task],
 ) -> int:
-    """Run transcribe → extract → fan-out for one chunk. Returns claims processed.
+    """Run extract → fan-out for already-transcribed text. Returns claims processed.
 
     Per-claim search/verdict work is fire-and-forget — appended to
-    `background_tasks` so run_session can await them at end-of-session, but
-    not blocking this chunk's return. That way chunk N+1 can start
-    transcribing while chunk N's verdicts are still resolving.
+    `background_tasks` so the run_session caller can await them at
+    end-of-session, but not blocking this chunk's return. That way chunk N+1
+    can start being processed while chunk N's verdicts are still resolving.
     """
-    transcription = await transcriber.transcribe(audio_bytes, mime_type=chunk.mime_type)
-    if not transcription.text.strip():
+    if not transcript.strip():
         return 0
 
     claims = await get_graph().extract(
@@ -138,6 +137,7 @@ async def process_chunk(
     cache: VerdictCache,
     out_queue: asyncio.Queue,
     max_claims_remaining: int,
+    background_tasks: list[asyncio.Task],
 ) -> int:
     """Run transcribe → extract → fan-out for one audio chunk."""
     transcription = await transcriber.transcribe(audio_bytes, mime_type=chunk.mime_type)
@@ -150,6 +150,7 @@ async def process_chunk(
         cache=cache,
         out_queue=out_queue,
         max_claims_remaining=max_claims_remaining,
+        background_tasks=background_tasks,
     )
 
 
@@ -208,6 +209,7 @@ async def run_transcript_session(
     deduper = ClaimDeduper()
     cache = VerdictCache()
     claims_processed = 0
+    background_tasks: list[asyncio.Task] = []
 
     try:
         async for chunk, text in statements:
@@ -225,6 +227,7 @@ async def run_transcript_session(
                     cache=cache,
                     out_queue=out_queue,
                     max_claims_remaining=remaining,
+                    background_tasks=background_tasks,
                 )
             except Exception as exc:
                 log.exception("statement %s failed: %s", chunk.chunk_id, exc)
@@ -232,5 +235,7 @@ async def run_transcript_session(
                     OverlayEvent(event="error", session_id=session_id, message=str(exc))
                 )
     finally:
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
         context.reset_context(session_id)
         await out_queue.put(OverlayEvent(event="session_ended", session_id=session_id))
