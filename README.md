@@ -93,8 +93,27 @@ with `--min-instances=1 --no-cpu-throttling --concurrency=80` so SSE sessions st
 warm. It prints the service URL at the end. Use `make teardown` to remove the
 Cloud Run service and Pub/Sub topics.
 
-CI: `cloudbuild.yaml` does the same build + deploy step; wire to a Cloud Build
-trigger on push to `main`.
+### Auto-deploy on push to `main`
+
+`cloudbuild.yaml` is the build recipe; you also need a Cloud Build *trigger*
+to fire it on push. One-time setup:
+
+1. Connect the repo to Cloud Build (manual — OAuth can't be scripted):
+   https://console.cloud.google.com/cloud-build/triggers/connect — pick
+   **GitHub (Cloud Build GitHub App)**, authorize, select
+   `bluefalcon2357/hackathon-io`. Also install the
+   [Cloud Build GitHub App](https://github.com/apps/google-cloud-build) on
+   the repo.
+2. Create the trigger:
+   ```bash
+   make setup-trigger
+   ```
+   Idempotent — safe to re-run. Sets up a trigger named `hackathon-io-main`
+   that fires on every push to `main` and runs `cloudbuild.yaml`.
+
+After that, merging a PR auto-deploys. View runs at
+https://console.cloud.google.com/cloud-build/builds — fire manually with
+`gcloud builds triggers run hackathon-io-main --branch=main`.
 
 ### Working around YouTube's bot wall
 

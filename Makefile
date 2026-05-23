@@ -28,5 +28,8 @@ docker:
 deploy:
 	./scripts/deploy.sh
 
+setup-trigger:
+	./scripts/setup-trigger.sh
+
 teardown:
 	./scripts/teardown.sh
