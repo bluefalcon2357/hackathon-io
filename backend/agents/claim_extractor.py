@@ -82,9 +82,17 @@ async def extract_claims(
     except json.JSONDecodeError:
         log.warning("claim extractor returned non-JSON: %s", (response.text or "")[:200])
         return []
+    # Gemini sometimes returns the JSON as a bare array of claim objects
+    # instead of the documented `{"claims": [...]}` wrapper. Accept both.
+    if isinstance(parsed, list):
+        parsed = {"claims": parsed}
+    if not isinstance(parsed, dict):
+        return []
 
     claims: list[Claim] = []
     for item in parsed.get("claims", []):
+        if not isinstance(item, dict):
+            continue
         text = (item.get("text") or "").strip()
         if not text:
             continue

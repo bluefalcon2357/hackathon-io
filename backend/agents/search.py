@@ -66,6 +66,8 @@ async def search_claim(claim_text: str) -> SearchEvidence:
             parsed = json.loads(raw or "{}")
         except json.JSONDecodeError:
             parsed = {"snippet": raw[:500], "supports": "unclear"}
+        if not isinstance(parsed, dict):
+            parsed = {"snippet": raw[:500], "supports": "unclear"}
     except Exception as exc:
         log.exception("search grounding failed: %s", exc)
         return SearchEvidence(

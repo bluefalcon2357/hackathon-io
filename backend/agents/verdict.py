@@ -87,6 +87,8 @@ async def adjudicate(claim: Claim, evidence: list[SearchEvidence]) -> Verdict:
         )
         _log_model_version_once(getattr(response, "model_version", None))
         parsed = json.loads(response.text or "{}")
+        if not isinstance(parsed, dict):
+            parsed = {}
     except Exception as exc:
         log.warning("verdict adjudication failed: %s", exc)
         return Verdict(

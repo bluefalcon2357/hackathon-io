@@ -211,6 +211,10 @@ async def fetch_captions(url: str, session_id: str) -> list[tuple[float, float, 
             # fall back to audio mode.
             "--retries", "4",
             "--retry-sleep", "http:exp=2:8",
+            # The Android/iOS player clients hit a different caption endpoint
+            # than web and are rate-limited far less aggressively from
+            # data-center IPs — same trick we use for the metadata probe.
+            "--extractor-args", "youtube:player_client=android,ios,web",
             "-o", out_template,
         ]
         cookies_file = os.environ.get("YT_DLP_COOKIES")

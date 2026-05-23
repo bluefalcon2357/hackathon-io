@@ -62,4 +62,6 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> Transc
     except json.JSONDecodeError:
         log.warning("transcriber returned non-JSON: %s", (response.text or "")[:200])
         return Transcription(text="", speaker=None)
+    if not isinstance(parsed, dict):
+        return Transcription(text="", speaker=None)
     return Transcription(text=parsed.get("text", "") or "", speaker=parsed.get("speaker"))
