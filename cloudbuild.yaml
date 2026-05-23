@@ -1,20 +1,26 @@
 # Cloud Build pipeline: build image -> push to Artifact Registry -> deploy to Cloud Run.
-# Trigger via: `gcloud builds submit --config cloudbuild.yaml .`
-# Or wire to a Cloud Build trigger on push to main.
+#
+# Two ways to invoke:
+#   1. Manual: `gcloud builds submit --config cloudbuild.yaml .`
+#      Tags the image as `:latest` and `:manual-<BUILD_ID>`.
+#   2. Trigger on push to main (see scripts/setup-trigger.sh)
+#      Override `_TAG` to `$SHORT_SHA` in the trigger config to pin per-commit
+#      tags, or leave it as `:latest` for rolling deploys.
 
 substitutions:
   _REGION: us-central1
   _SERVICE: hackathon-io
   _REPO: hackathon-io
+  _TAG: latest
 
 steps:
   - name: gcr.io/cloud-builders/docker
     args:
       - build
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:${_TAG}
       - -t
-      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+      - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:build-${BUILD_ID}
       - .
 
   - name: gcr.io/cloud-builders/docker
@@ -26,7 +32,7 @@ steps:
       - run
       - deploy
       - ${_SERVICE}
-      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
+      - --image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:build-${BUILD_ID}
       - --region=${_REGION}
       - --platform=managed
       - --allow-unauthenticated
@@ -40,8 +46,8 @@ steps:
       - --set-env-vars=LOCAL_MODE=false,GEMINI_MODEL=gemini-flash-latest,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,VERTEX_LOCATION=${_REGION}
 
 images:
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$SHORT_SHA
-  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:latest
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:build-${BUILD_ID}
 
 options:
   logging: CLOUD_LOGGING_ONLY
