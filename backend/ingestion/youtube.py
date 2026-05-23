@@ -60,6 +60,11 @@ def _ydl_cli_args(url: str) -> list[str]:
         "--geo-bypass",
         "--no-check-certificate",
         "--retries", "3",
+        # We only consume audio downstream (transcription). Asking for
+        # "bv*+ba/b" — yt-dlp's default — fails on videos that only expose
+        # SABR-streamed combined formats (requires PO tokens). Audio-only
+        # formats are nearly always available without auth tokens.
+        "-f", "bestaudio/best",
         "--user-agent", os.environ.get("YT_DLP_USER_AGENT", _DEFAULT_UA),
     ]
     cookies_file = _writable_cookies_path()
