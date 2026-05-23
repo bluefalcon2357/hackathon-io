@@ -43,7 +43,11 @@ steps:
       - --memory=2Gi
       - --timeout=3600
       - --no-cpu-throttling
-      - --set-env-vars=LOCAL_MODE=false,GEMINI_MODEL=gemini-flash-latest,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,VERTEX_LOCATION=${_REGION}
+      # `--update-env-vars` (vs `--set-env-vars`) is additive: it only
+      # touches the listed keys and preserves anything set out-of-band
+      # — e.g. YT_DLP_COOKIES + the /secrets/cookies.txt mount applied
+      # via `gcloud run services update --update-secrets`.
+      - --update-env-vars=LOCAL_MODE=false,GEMINI_MODEL=gemini-flash-latest,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,VERTEX_LOCATION=${_REGION}
 
 images:
   - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:${_TAG}

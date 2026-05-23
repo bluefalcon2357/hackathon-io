@@ -80,7 +80,11 @@ gcloud run deploy "${SERVICE}" \
   --memory 2Gi \
   --timeout 3600 \
   --no-cpu-throttling \
-  --set-env-vars "LOCAL_MODE=false,GEMINI_MODEL=gemini-flash-latest,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT},VERTEX_LOCATION=${REGION}"
+  --update-env-vars "LOCAL_MODE=false,GEMINI_MODEL=gemini-flash-latest,GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=${PROJECT},VERTEX_LOCATION=${REGION}"
+# `--update-env-vars` is additive: it only touches the listed keys and
+# preserves anything set out-of-band (e.g. YT_DLP_COOKIES + the
+# /secrets/cookies.txt mount applied via `gcloud run services update
+# --update-secrets`). Switching back to `--set-env-vars` would wipe them.
 
 URL=$(gcloud run services describe "${SERVICE}" \
   --region "${REGION}" --project "${PROJECT}" --format='value(status.url)')
