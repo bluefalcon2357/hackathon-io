@@ -18,17 +18,17 @@ snippet from a video, extract every verifiable factual claim. Skip opinions,
 hypotheticals, rhetorical questions, and pure narration.
 
 Return JSON ONLY in this shape:
-{
+{{
   "claims": [
-    {
+    {{
       "text": "<the verbatim claim>",
       "check_worthy": true,
       "confidence": 0.0-1.0
-    }
+    }}
   ]
-}
+}}
 
-If no claims are check-worthy, return {"claims": []}.
+If no claims are check-worthy, return {{"claims": []}}.
 
 Transcript (spans [{t_start}s, {t_end}s] of the video):
 \"\"\"
