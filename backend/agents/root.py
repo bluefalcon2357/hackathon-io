@@ -14,7 +14,8 @@ import asyncio
 import logging
 from typing import AsyncIterator
 
-from backend.agents import claim_extractor, context, search, transcriber, trusted_source, verdict
+from backend.agents import context, transcriber
+from backend.agents.graph import get_graph
 from backend.runtime.dedupe import ClaimDeduper
 from backend.runtime.firestore_cache import VerdictCache
 from backend.schemas import Chunk, OverlayEvent
@@ -51,12 +52,9 @@ async def _process_claim(
         )
     )
 
-    search_task = asyncio.create_task(search.search_claim(claim.text))
-    trusted_task = asyncio.create_task(trusted_source.check_trusted(claim.text))
-    evidence_results = await asyncio.gather(search_task, trusted_task, return_exceptions=True)
-    evidence = [e for e in evidence_results if not isinstance(e, Exception)]
-
-    final = await verdict.adjudicate(claim, evidence)
+    graph = get_graph()
+    evidence = await graph.gather_evidence(claim.text)
+    final = await graph.adjudicate(claim, evidence)
     await cache.put(claim.text, final)
     await out_queue.put(
         OverlayEvent(event="verdict", session_id=session_id, claim=claim, verdict=final)
@@ -78,7 +76,7 @@ async def process_chunk(
     if not transcription.text.strip():
         return 0
 
-    claims = await claim_extractor.extract_claims(
+    claims = await get_graph().extract(
         chunk_id=chunk.chunk_id,
         transcript=transcription.text,
         t_start=chunk.t_start,

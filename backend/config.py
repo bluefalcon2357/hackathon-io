@@ -22,7 +22,10 @@ class Settings(BaseSettings):
     pubsub_chunk_topic: str = "fact-check-chunks"
     pubsub_verdict_topic: str = "fact-check-verdicts"
 
-    trusted_domains: str = "reuters.com,apnews.com,bbc.com,npr.org,cdc.gov,nih.gov,who.int"
+    trusted_domains: str = (
+        "wikipedia.org,pubmed.ncbi.nlm.nih.gov,worldbank.org,"
+        "earthquake.usgs.gov,cdc.gov,nih.gov,who.int"
+    )
 
     host: str = "0.0.0.0"
     port: int = 8080

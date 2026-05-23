@@ -1,4 +1,4 @@
-.PHONY: dev install demo-recorded demo-live test lint clean docker
+.PHONY: dev install demo-recorded demo-live test lint clean docker deploy teardown
 
 install:
 	pip install -e ".[dev]"
@@ -24,3 +24,9 @@ clean:
 docker:
 	docker build -t hackathon-io .
 	docker run --rm -p 8080:8080 --env-file .env hackathon-io
+
+deploy:
+	./scripts/deploy.sh
+
+teardown:
+	./scripts/teardown.sh

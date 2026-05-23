@@ -74,13 +74,24 @@ make demo-recorded   # posts a known short clip
 make demo-live       # posts a known livestream URL
 ```
 
-## Deploy
+## Deploy to Google Cloud
+
+One-shot deploy:
 
 ```bash
-gcloud run deploy hackathon-io \
-  --source . \
-  --region $VERTEX_LOCATION \
-  --concurrency 80 \
-  --min-instances 1 \
-  --set-env-vars LOCAL_MODE=false,GEMINI_MODEL=gemini-flash-latest
+export GOOGLE_CLOUD_PROJECT=your-project
+gcloud auth login
+
+make deploy
+# or: ./scripts/deploy.sh
 ```
+
+The script enables the required APIs (Vertex AI, Cloud Run, Cloud Build, Pub/Sub,
+Firestore, Artifact Registry), creates a Pub/Sub topic pair, provisions a Firestore
+Native database, builds the container with Cloud Build, and deploys to Cloud Run
+with `--min-instances=1 --no-cpu-throttling --concurrency=80` so SSE sessions stay
+warm. It prints the service URL at the end. Use `make teardown` to remove the
+Cloud Run service and Pub/Sub topics.
+
+CI: `cloudbuild.yaml` does the same build + deploy step; wire to a Cloud Build
+trigger on push to `main`.
