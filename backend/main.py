@@ -61,7 +61,7 @@ async def create_session(req: SessionRequest) -> SessionResponse:
         raise HTTPException(status_code=400, detail="youtube_url is required")
 
     kind = req.kind or youtube.guess_kind_from_url(req.youtube_url)
-    session = manager.create(req.youtube_url, kind)
+    session = manager.create(req.youtube_url, kind, mode=req.mode)
     session.task = asyncio.create_task(runner.run(session))
 
     return SessionResponse(session_id=session.session_id, kind=kind)

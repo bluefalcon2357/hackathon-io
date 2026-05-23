@@ -9,6 +9,11 @@ class StreamKind(str, Enum):
     LIVE = "live"
 
 
+class IngestionMode(str, Enum):
+    AUDIO = "audio"
+    TRANSCRIPT = "transcript"
+
+
 class Chunk(BaseModel):
     chunk_id: str
     session_id: str
@@ -56,6 +61,7 @@ class OverlayEvent(BaseModel):
 class SessionRequest(BaseModel):
     youtube_url: str
     kind: StreamKind | None = None
+    mode: IngestionMode = IngestionMode.AUDIO
 
 
 class SessionResponse(BaseModel):
