@@ -51,22 +51,31 @@ async def _process_claim(
     )
 
     graph = get_graph()
+    # Gemini + google_search grounding routinely takes 8-15s per claim;
+    # adjudicate is a single non-grounded call so it's faster. These caps
+    # are upper bounds — most claims return well under them.
+    from backend.schemas import Verdict
     try:
-        evidence = await asyncio.wait_for(graph.gather_evidence(claim.text), timeout=6.0)
+        evidence = await asyncio.wait_for(graph.gather_evidence(claim.text), timeout=20.0)
     except asyncio.TimeoutError:
-        evidence = []
         log.warning("evidence gather timed out for claim: %s", claim.text[:60])
-    try:
-        final = await asyncio.wait_for(graph.adjudicate(claim, evidence), timeout=4.0)
-    except asyncio.TimeoutError:
-        from backend.schemas import Verdict
         final = Verdict(
             claim_id=claim.claim_id,
             status="yellow",
-            summary="Verdict timed out.",
-            citations=evidence,
+            summary="Evidence gather timed out.",
+            citations=[],
         )
-        log.warning("adjudicate timed out for claim: %s", claim.text[:60])
+    else:
+        try:
+            final = await asyncio.wait_for(graph.adjudicate(claim, evidence), timeout=10.0)
+        except asyncio.TimeoutError:
+            final = Verdict(
+                claim_id=claim.claim_id,
+                status="yellow",
+                summary="Verdict timed out.",
+                citations=evidence,
+            )
+            log.warning("adjudicate timed out for claim: %s", claim.text[:60])
     await cache.put(claim.text, final)
     await out_queue.put(
         OverlayEvent(event="verdict", session_id=session_id, claim=claim, verdict=final)

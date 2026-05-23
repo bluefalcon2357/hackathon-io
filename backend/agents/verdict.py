@@ -30,11 +30,18 @@ Return JSON ONLY:
 async def adjudicate(claim: Claim, evidence: list[SearchEvidence]) -> Verdict:
     settings = get_settings()
 
-    if settings.stub_llm or not evidence:
+    if settings.stub_llm:
         return Verdict(
             claim_id=claim.claim_id,
             status="yellow",
-            summary="[stub] insufficient evidence to adjudicate.",
+            summary="Stub mode (LLM disabled).",
+            citations=evidence,
+        )
+    if not evidence:
+        return Verdict(
+            claim_id=claim.claim_id,
+            status="yellow",
+            summary="No supporting evidence found.",
             citations=evidence,
         )
 
