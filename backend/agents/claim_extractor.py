@@ -8,6 +8,7 @@ import json
 import logging
 import uuid
 
+from backend.agents._retry import with_retry
 from backend.config import get_settings
 from backend.schemas import Claim
 
@@ -69,13 +70,16 @@ async def extract_claims(
     prompt = EXTRACTION_PROMPT.format(
         t_start=int(t_start), t_end=int(t_end), transcript=transcript
     )
-    response = await client.aio.models.generate_content(
-        model=settings.gemini_model,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.1,
+    response = await with_retry(
+        lambda: client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1,
+            ),
         ),
+        label="claim_extractor",
     )
     try:
         parsed = json.loads(response.text or "{}")

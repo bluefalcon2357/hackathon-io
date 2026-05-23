@@ -14,11 +14,11 @@ import asyncio
 import logging
 from typing import AsyncIterator
 
-from backend.agents import context, transcriber
+from backend.agents import context, transcriber, video_extractor
 from backend.agents.graph import get_graph
 from backend.runtime.dedupe import ClaimDeduper
 from backend.runtime.firestore_cache import VerdictCache
-from backend.schemas import Chunk, OverlayEvent
+from backend.schemas import Chunk, Claim, OverlayEvent
 
 log = logging.getLogger(__name__)
 
@@ -82,36 +82,22 @@ async def _process_claim(
     )
 
 
-async def _process_text(
+def _dispatch_claims(
     *,
     session_id: str,
-    chunk: Chunk,
-    transcript: str,
-    speaker: str | None,
+    claims: list[Claim],
     deduper: ClaimDeduper,
     cache: VerdictCache,
     out_queue: asyncio.Queue,
     max_claims_remaining: int,
     background_tasks: list[asyncio.Task],
 ) -> int:
-    """Run extract → fan-out for already-transcribed text. Returns claims processed.
+    """Schedule fire-and-forget per-claim search/verdict tasks.
 
-    Per-claim search/verdict work is fire-and-forget — appended to
-    `background_tasks` so the run_session caller can await them at
-    end-of-session, but not blocking this chunk's return. That way chunk N+1
-    can start being processed while chunk N's verdicts are still resolving.
+    Returns the number actually scheduled (excludes filtered/duplicate claims).
+    Per-claim work is appended to ``background_tasks`` so the run_session
+    caller can await them at end-of-session without blocking the next chunk.
     """
-    if not transcript.strip():
-        return 0
-
-    claims = await get_graph().extract(
-        chunk_id=chunk.chunk_id,
-        transcript=transcript,
-        t_start=chunk.t_start,
-        t_end=chunk.t_end,
-        speaker=speaker,
-    )
-
     processed = 0
     for claim in claims:
         if processed >= max_claims_remaining:
@@ -133,8 +119,41 @@ async def _process_text(
             )
         )
         processed += 1
-
     return processed
+
+
+async def _process_text(
+    *,
+    session_id: str,
+    chunk: Chunk,
+    transcript: str,
+    speaker: str | None,
+    deduper: ClaimDeduper,
+    cache: VerdictCache,
+    out_queue: asyncio.Queue,
+    max_claims_remaining: int,
+    background_tasks: list[asyncio.Task],
+) -> int:
+    """Run extract → fan-out for already-transcribed text. Returns claims processed."""
+    if not transcript.strip():
+        return 0
+
+    claims = await get_graph().extract(
+        chunk_id=chunk.chunk_id,
+        transcript=transcript,
+        t_start=chunk.t_start,
+        t_end=chunk.t_end,
+        speaker=speaker,
+    )
+    return _dispatch_claims(
+        session_id=session_id,
+        claims=claims,
+        deduper=deduper,
+        cache=cache,
+        out_queue=out_queue,
+        max_claims_remaining=max_claims_remaining,
+        background_tasks=background_tasks,
+    )
 
 
 async def process_chunk(
@@ -243,6 +262,52 @@ async def run_transcript_session(
                 await out_queue.put(
                     OverlayEvent(event="error", session_id=session_id, message=str(exc))
                 )
+    finally:
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+        context.reset_context(session_id)
+        await out_queue.put(OverlayEvent(event="session_ended", session_id=session_id))
+
+
+async def run_video_session(
+    *,
+    session_id: str,
+    youtube_url: str,
+    out_queue: asyncio.Queue,
+    max_claims: int,
+) -> None:
+    """Drive the pipeline for direct-video mode.
+
+    Gemini receives the YouTube URL directly and returns all check-worthy
+    claims (with timestamps) in one shot. Each claim then fans out through
+    the existing dedupe → search → verdict pipeline.
+    """
+    deduper = ClaimDeduper()
+    cache = VerdictCache()
+    background_tasks: list[asyncio.Task] = []
+
+    try:
+        claims = await video_extractor.extract_claims_from_video(
+            youtube_url, session_id
+        )
+        log.info(
+            "video mode: extracted %d claims for session %s",
+            len(claims), session_id,
+        )
+        _dispatch_claims(
+            session_id=session_id,
+            claims=claims,
+            deduper=deduper,
+            cache=cache,
+            out_queue=out_queue,
+            max_claims_remaining=max_claims,
+            background_tasks=background_tasks,
+        )
+    except Exception as exc:
+        log.exception("session %s video mode failed: %s", session_id, exc)
+        await out_queue.put(
+            OverlayEvent(event="error", session_id=session_id, message=str(exc))
+        )
     finally:
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)

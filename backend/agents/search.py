@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 
+from backend.agents._retry import with_retry
 from backend.config import get_settings
 from backend.schemas import SearchEvidence
 
@@ -49,13 +50,16 @@ async def search_claim(claim_text: str) -> SearchEvidence:
     )
 
     try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=_SEARCH_PROMPT.format(claim=claim_text),
-            config=types.GenerateContentConfig(
-                tools=[types.Tool(google_search=types.GoogleSearch())],
-                temperature=0.1,
+        response = await with_retry(
+            lambda: client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=_SEARCH_PROMPT.format(claim=claim_text),
+                config=types.GenerateContentConfig(
+                    tools=[types.Tool(google_search=types.GoogleSearch())],
+                    temperature=0.1,
+                ),
             ),
+            label="search",
         )
         raw = (response.text or "").strip()
         if raw.startswith("```"):

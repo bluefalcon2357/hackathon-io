@@ -11,9 +11,10 @@
     <h1>Live Reality Fact-Check</h1>
     <form id="session-form">
       <input id="url" type="url" placeholder="Paste a YouTube URL (recorded or live)" required />
-      <select id="mode" title="How the audio gets to the model">
+      <select id="mode" title="How the video gets processed">
         <option value="audio">Audio fragments</option>
         <option value="transcript">Captions (complete sentences)</option>
+        <option value="video">Direct video (Gemini fetches)</option>
       </select>
       <button type="submit">Start</button>
       <button type="button" id="stop">Stop</button>

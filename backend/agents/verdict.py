@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 
+from backend.agents._retry import with_retry
 from backend.config import get_settings
 from backend.schemas import Claim, SearchEvidence, Verdict
 
@@ -77,13 +78,16 @@ async def adjudicate(claim: Claim, evidence: list[SearchEvidence]) -> Verdict:
     )
 
     try:
-        response = await client.aio.models.generate_content(
-            model=settings.gemini_model,
-            contents=_VERDICT_PROMPT.format(claim=claim.text, evidence=evidence_block),
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.0,
+        response = await with_retry(
+            lambda: client.aio.models.generate_content(
+                model=settings.gemini_model,
+                contents=_VERDICT_PROMPT.format(claim=claim.text, evidence=evidence_block),
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.0,
+                ),
             ),
+            label="verdict",
         )
         _log_model_version_once(getattr(response, "model_version", None))
         parsed = json.loads(response.text or "{}")

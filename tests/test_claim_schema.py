@@ -41,6 +41,11 @@ def test_session_request_accepts_transcript_mode():
     assert r.mode == IngestionMode.TRANSCRIPT
 
 
+def test_session_request_accepts_video_mode():
+    r = SessionRequest(youtube_url="https://youtu.be/abc", mode="video")
+    assert r.mode == IngestionMode.VIDEO
+
+
 def test_evidence_default_supports():
     e = SearchEvidence(source="trusted", snippet="x")
     assert e.supports == "unclear"

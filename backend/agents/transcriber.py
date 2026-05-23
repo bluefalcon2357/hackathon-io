@@ -11,6 +11,7 @@ import json
 import logging
 from dataclasses import dataclass
 
+from backend.agents._retry import with_retry
 from backend.config import get_settings
 
 log = logging.getLogger(__name__)
@@ -41,21 +42,24 @@ async def transcribe(audio_bytes: bytes, mime_type: str = "audio/ogg") -> Transc
         project=settings.google_cloud_project or None,
         location=settings.vertex_location,
     )
-    response = await client.aio.models.generate_content(
-        model=settings.gemini_model,
-        contents=[
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_text(text=_TRANSCRIBE_PROMPT),
-                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                ],
-            )
-        ],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.0,
+    response = await with_retry(
+        lambda: client.aio.models.generate_content(
+            model=settings.gemini_model,
+            contents=[
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=_TRANSCRIBE_PROMPT),
+                        types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                    ],
+                )
+            ],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.0,
+            ),
         ),
+        label="transcriber",
     )
     try:
         parsed = json.loads(response.text or "{}")
