@@ -12,15 +12,47 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import AsyncIterator
 
 from backend.agents import context, transcriber, video_extractor
 from backend.agents.graph import get_graph
+from backend.config import get_settings
 from backend.runtime.dedupe import ClaimDeduper
 from backend.runtime.firestore_cache import VerdictCache
-from backend.schemas import Chunk, Claim, OverlayEvent
+from backend.schemas import Chunk, Claim, OverlayEvent, Verdict
 
 log = logging.getLogger(__name__)
+
+
+async def _resolve_verdict(claim: Claim) -> Verdict:
+    """Run evidence gather → adjudicate for one claim, with per-stage timeouts.
+
+    Gemini + google_search grounding routinely takes 8-15s per claim; adjudicate
+    is a single non-grounded call so it's faster. These caps are upper bounds —
+    most claims return well under them.
+    """
+    graph = get_graph()
+    try:
+        evidence = await asyncio.wait_for(graph.gather_evidence(claim.text), timeout=20.0)
+    except asyncio.TimeoutError:
+        log.warning("evidence gather timed out for claim: %s", claim.text[:60])
+        return Verdict(
+            claim_id=claim.claim_id,
+            status="yellow",
+            summary="Evidence gather timed out.",
+            citations=[],
+        )
+    try:
+        return await asyncio.wait_for(graph.adjudicate(claim, evidence), timeout=10.0)
+    except asyncio.TimeoutError:
+        log.warning("adjudicate timed out for claim: %s", claim.text[:60])
+        return Verdict(
+            claim_id=claim.claim_id,
+            status="yellow",
+            summary="Verdict timed out.",
+            citations=evidence,
+        )
 
 
 async def _process_claim(
@@ -30,6 +62,7 @@ async def _process_claim(
     deduper: ClaimDeduper,
     cache: VerdictCache,
     out_queue: asyncio.Queue,
+    semaphore: asyncio.Semaphore | None = None,
 ) -> None:
     # Caller (process_chunk) already ran dedup before scheduling this task.
     del deduper  # kept in signature for future use; suppress unused warning
@@ -50,32 +83,13 @@ async def _process_claim(
         )
     )
 
-    graph = get_graph()
-    # Gemini + google_search grounding routinely takes 8-15s per claim;
-    # adjudicate is a single non-grounded call so it's faster. These caps
-    # are upper bounds — most claims return well under them.
-    from backend.schemas import Verdict
-    try:
-        evidence = await asyncio.wait_for(graph.gather_evidence(claim.text), timeout=20.0)
-    except asyncio.TimeoutError:
-        log.warning("evidence gather timed out for claim: %s", claim.text[:60])
-        final = Verdict(
-            claim_id=claim.claim_id,
-            status="yellow",
-            summary="Evidence gather timed out.",
-            citations=[],
-        )
+    # The semaphore (transcript mode) bounds how many grounded checks run at
+    # once; without it (audio/video) the leaf timeouts already cap each task.
+    if semaphore is not None:
+        async with semaphore:
+            final = await _resolve_verdict(claim)
     else:
-        try:
-            final = await asyncio.wait_for(graph.adjudicate(claim, evidence), timeout=10.0)
-        except asyncio.TimeoutError:
-            final = Verdict(
-                claim_id=claim.claim_id,
-                status="yellow",
-                summary="Verdict timed out.",
-                citations=evidence,
-            )
-            log.warning("adjudicate timed out for claim: %s", claim.text[:60])
+        final = await _resolve_verdict(claim)
     await cache.put(claim.text, final)
     await out_queue.put(
         OverlayEvent(event="verdict", session_id=session_id, claim=claim, verdict=final)
@@ -91,6 +105,7 @@ def _dispatch_claims(
     out_queue: asyncio.Queue,
     max_claims_remaining: int,
     background_tasks: list[asyncio.Task],
+    semaphore: asyncio.Semaphore | None = None,
 ) -> int:
     """Schedule fire-and-forget per-claim search/verdict tasks.
 
@@ -115,6 +130,7 @@ def _dispatch_claims(
                     deduper=deduper,
                     cache=cache,
                     out_queue=out_queue,
+                    semaphore=semaphore,
                 )
             )
         )
@@ -226,6 +242,28 @@ async def run_session(
         await out_queue.put(OverlayEvent(event="session_ended", session_id=session_id))
 
 
+def statement_to_claim(chunk: Chunk, text: str) -> Claim | None:
+    """Wrap a complete-sentence transcript statement as a check-worthy claim.
+
+    Transcript mode checks the *entire* transcript, so we skip claim extraction
+    (which filters out everything that isn't a salient factual claim) and send
+    each statement straight into the verdict pipeline verbatim.
+    """
+    text = text.strip()
+    if not text:
+        return None
+    return Claim(
+        claim_id=f"{chunk.chunk_id}:{uuid.uuid4().hex[:6]}",
+        chunk_id=chunk.chunk_id,
+        text=text,
+        t_start=chunk.t_start,
+        t_end=chunk.t_end,
+        check_worthy=True,
+        confidence=1.0,
+        speaker=None,
+    )
+
+
 async def run_transcript_session(
     *,
     session_id: str,
@@ -233,9 +271,15 @@ async def run_transcript_session(
     out_queue: asyncio.Queue,
     max_claims: int,
 ) -> None:
-    """Drive the pipeline for transcript mode — text in, no audio transcription."""
+    """Drive transcript mode: verify *every* statement of the full transcript.
+
+    No claim-extraction filter — each buffered statement becomes a claim and
+    runs the full search → verdict pipeline. A semaphore bounds concurrency so
+    a long transcript doesn't fan out hundreds of grounded Gemini calls at once.
+    """
     deduper = ClaimDeduper()
     cache = VerdictCache()
+    semaphore = asyncio.Semaphore(get_settings().max_concurrent_checks)
     claims_processed = 0
     background_tasks: list[asyncio.Task] = []
 
@@ -243,19 +287,21 @@ async def run_transcript_session(
         async for chunk, text in statements:
             remaining = max_claims - claims_processed
             if remaining <= 0:
-                log.info("session %s hit claim cap (%d)", session_id, max_claims)
+                log.info("session %s hit statement cap (%d)", session_id, max_claims)
                 break
+            claim = statement_to_claim(chunk, text)
+            if claim is None:
+                continue
             try:
-                claims_processed += await _process_text(
+                claims_processed += _dispatch_claims(
                     session_id=session_id,
-                    chunk=chunk,
-                    transcript=text,
-                    speaker=None,
+                    claims=[claim],
                     deduper=deduper,
                     cache=cache,
                     out_queue=out_queue,
                     max_claims_remaining=remaining,
                     background_tasks=background_tasks,
+                    semaphore=semaphore,
                 )
             except Exception as exc:
                 log.exception("statement %s failed: %s", chunk.chunk_id, exc)
@@ -278,12 +324,14 @@ async def run_video_session(
 ) -> None:
     """Drive the pipeline for direct-video mode.
 
-    Gemini receives the YouTube URL directly and returns all check-worthy
-    claims (with timestamps) in one shot. Each claim then fans out through
-    the existing dedupe → search → verdict pipeline.
+    Gemini receives the YouTube URL directly and returns the full transcript
+    (every statement, with timestamps) in one shot. Each statement then fans
+    out through the existing dedupe → search → verdict pipeline, with bounded
+    concurrency so a long transcript doesn't trip rate limits.
     """
     deduper = ClaimDeduper()
     cache = VerdictCache()
+    semaphore = asyncio.Semaphore(get_settings().max_concurrent_checks)
     background_tasks: list[asyncio.Task] = []
 
     try:
@@ -291,7 +339,7 @@ async def run_video_session(
             youtube_url, session_id
         )
         log.info(
-            "video mode: extracted %d claims for session %s",
+            "video mode: extracted %d statements for session %s",
             len(claims), session_id,
         )
         _dispatch_claims(
@@ -302,6 +350,7 @@ async def run_video_session(
             out_queue=out_queue,
             max_claims_remaining=max_claims,
             background_tasks=background_tasks,
+            semaphore=semaphore,
         )
     except Exception as exc:
         log.exception("session %s video mode failed: %s", session_id, exc)

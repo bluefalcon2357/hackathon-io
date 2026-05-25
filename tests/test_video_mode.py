@@ -1,5 +1,4 @@
 """Direct-video mode: extractor parsing + runner branching + live fallback."""
-import asyncio
 from typing import AsyncIterator
 
 import pytest
@@ -98,6 +97,30 @@ def test_parse_claims_defaults_t_end_to_t_start_for_clock_strings():
     assert len(claims) == 1
     assert claims[0].t_start == 120.0
     assert claims[0].t_end == 120.0
+
+
+def test_parse_claims_keeps_every_statement_unfiltered():
+    # Full-transcript mode: even a statement the model flags not check-worthy stays.
+    raw = (
+        '{"claims": [{"text": "This is just an opinion.", '
+        '"t_start": "00:01", "t_end": "00:03", "check_worthy": false}]}'
+    )
+    claims = _parse_claims(raw, session_id="s1")
+    assert len(claims) == 1
+    assert claims[0].check_worthy is True
+
+
+def test_parse_claims_salvages_truncated_transcript():
+    # A long transcript can be cut off mid-object by the output-token cap; the
+    # completed statements should still be recovered.
+    raw = (
+        '{"claims": ['
+        '{"text": "One.", "t_start": "00:01", "t_end": "00:02"}, '
+        '{"text": "Two.", "t_start": "00:03", "t_end": "00:04"}, '
+        '{"text": "Thr'
+    )
+    claims = _parse_claims(raw, session_id="s1")
+    assert [c.text for c in claims] == ["One.", "Two."]
 
 
 @pytest.fixture

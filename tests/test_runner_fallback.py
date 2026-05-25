@@ -1,5 +1,4 @@
 """Runner-level test: transcript mode falls back to audio when captions fail."""
-import asyncio
 from typing import AsyncIterator
 
 import pytest

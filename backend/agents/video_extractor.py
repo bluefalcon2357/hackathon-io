@@ -21,32 +21,28 @@ from backend.schemas import Claim
 
 log = logging.getLogger(__name__)
 
-_VIDEO_PROMPT = """You are a fact-checking assistant. Watch this YouTube video
-and extract every verifiable factual claim spoken by the speakers. Skip
-opinions, hypotheticals, rhetorical questions, and pure narration.
+_VIDEO_PROMPT = """You are a fact-checking assistant. Produce the COMPLETE
+transcript of this YouTube video: every statement spoken by the speakers, in
+order, from start to finish. Do NOT skip, summarize, paraphrase, or filter —
+transcribe factual claims, opinions, questions, and narration alike, verbatim.
 
-For each claim, report the time range when it is spoken as timestamps on the
-video's own playback clock, in MM:SS format (use HH:MM:SS for videos longer
-than an hour). t_start is the moment the speaker begins the claim and t_end is
-the moment they finish it; the timestamps must line up with when the words are
-actually heard, all the way through long videos — do not bunch every claim near
-the start.
+Break the transcript into individual statements (about one sentence each). For
+each statement, give the time range when it is spoken as timestamps on the
+video's own playback clock, in MM:SS format (use HH:MM:SS for videos longer than
+an hour). Timestamps must line up with when the words are actually heard and
+advance through the entire video — do not bunch them near the start.
 
 Return JSON ONLY in this shape:
 {
   "claims": [
     {
-      "text": "<the verbatim claim>",
+      "text": "<the verbatim statement>",
       "t_start": "MM:SS",
       "t_end": "MM:SS",
-      "speaker": "speaker_1",
-      "check_worthy": true,
-      "confidence": 0.0-1.0
+      "speaker": "speaker_1"
     }
   ]
 }
-
-If no claims are check-worthy, return {"claims": []}.
 """
 
 
@@ -91,6 +87,7 @@ async def extract_claims_from_video(
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 temperature=0.1,
+                max_output_tokens=settings.video_max_output_tokens,
             ),
         ),
         label="video_extractor",
@@ -128,16 +125,45 @@ def _to_seconds(value: object) -> float | None:
         return None
 
 
+def _loads_lenient(raw: str, session_id: str) -> dict | list:
+    """Parse the model's JSON, salvaging a truncated claims array if needed.
+
+    A complete transcript of a long video can exceed the output-token budget and
+    get cut off mid-object. Rather than drop the whole response, trim to the last
+    complete object and close the array so the finished statements still land.
+    """
+    try:
+        return json.loads(raw or "{}")
+    except json.JSONDecodeError:
+        last = raw.rfind("}")
+        if last != -1:
+            try:
+                salvaged = json.loads(raw[: last + 1] + "]}")
+            except json.JSONDecodeError:
+                pass
+            else:
+                log.warning(
+                    "video extractor JSON truncated for %s; salvaged partial transcript",
+                    session_id,
+                )
+                return salvaged
+        log.warning("video extractor returned non-JSON: %s", raw[:200])
+        return {}
+
+
 def _parse_claims(raw: str, session_id: str) -> list[Claim]:
     """Pure JSON-to-Claim parsing, factored out so tests can exercise it."""
-    try:
-        parsed = json.loads(raw or "{}")
-    except json.JSONDecodeError:
-        log.warning("video extractor returned non-JSON: %s", raw[:200])
+    parsed = _loads_lenient(raw, session_id)
+    # Gemini sometimes returns a bare array instead of the {"claims": [...]} wrapper.
+    if isinstance(parsed, list):
+        parsed = {"claims": parsed}
+    if not isinstance(parsed, dict):
         return []
 
     claims: list[Claim] = []
     for i, item in enumerate(parsed.get("claims", [])):
+        if not isinstance(item, dict):
+            continue
         text = (item.get("text") or "").strip()
         if not text:
             continue
@@ -154,7 +180,8 @@ def _parse_claims(raw: str, session_id: str) -> list[Claim]:
                 text=text,
                 t_start=t_start,
                 t_end=t_end,
-                check_worthy=bool(item.get("check_worthy", True)),
+                # Full-transcript mode: keep every statement, never filter here.
+                check_worthy=True,
                 confidence=float(item.get("confidence", 0.5)),
                 speaker=item.get("speaker"),
             )
