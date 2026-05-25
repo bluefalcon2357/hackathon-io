@@ -32,6 +32,19 @@ app.add_middleware(
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static assets with ``Cache-Control: no-cache`` so a browser never
+    keeps running a stale ``app.js`` after a redeploy. ``no-cache`` forces
+    revalidation on every load; unchanged files still come back as a cheap 304
+    via ETag/Last-Modified, so this costs a round-trip, not a re-download.
+    """
+
+    async def get_response(self, path: str, scope):  # type: ignore[override]
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     log.error("unhandled %s on %s: %s\n%s",
@@ -100,11 +113,13 @@ async def end_session(session_id: str) -> dict[str, str]:
 
 
 if FRONTEND_DIR.exists():
-    app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
+    app.mount("/static", NoCacheStaticFiles(directory=FRONTEND_DIR), name="static")
 
     @app.get("/")
     async def root_index() -> FileResponse:
-        return FileResponse(FRONTEND_DIR / "index.html")
+        return FileResponse(
+            FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-cache"}
+        )
 
 
 @app.on_event("startup")
