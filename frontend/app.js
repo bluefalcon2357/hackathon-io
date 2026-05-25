@@ -20,6 +20,7 @@ const els = {
   status: document.getElementById('status'),
   overlay: document.getElementById('overlay-layer'),
   claimList: document.getElementById('claim-list'),
+  queueHint: document.getElementById('claim-queue-hint'),
 };
 
 let ytPlayer = null;
@@ -95,6 +96,7 @@ async function startSession(url) {
   sawError = false;
   els.claimList.innerHTML = '';
   els.overlay.innerHTML = '';
+  if (els.queueHint) els.queueHint.hidden = true;
 
   setStatus(`${body.kind} · ${mode} · ${body.title ?? 'session active'}`, 'live');
   openStream();
@@ -209,6 +211,31 @@ function renderTick() {
   const t = currentTime();
   revealDueClaims(t);
   renderOverlay(t);
+  renderQueueHint();
+}
+
+// Recorded videos get fact-checked in one fast pass, so every claim can be
+// buffered seconds after Start while playback is still near 0:00. Without a
+// cue the sidebar looks broken ("session ended" but empty), so surface how
+// many claims are waiting and when the next one is due.
+function renderQueueHint() {
+  if (!els.queueHint) return;
+  let pending = 0;
+  let next = Infinity;
+  for (const entry of claims.values()) {
+    if (!entry.revealed) {
+      pending += 1;
+      if (entry.tStart < next) next = entry.tStart;
+    }
+  }
+  if (pending === 0) {
+    els.queueHint.hidden = true;
+    els.queueHint.textContent = '';
+    return;
+  }
+  const noun = pending === 1 ? 'fact-check' : 'fact-checks';
+  els.queueHint.textContent = `${pending} ${noun} queued · next at ${formatTime(next)} — plays in sync with the video`;
+  els.queueHint.hidden = false;
 }
 
 // Reveal claims in the sidebar once playback reaches their start time, oldest
@@ -268,6 +295,7 @@ els.stop.addEventListener('click', async () => {
   try { await fetch(`/api/sessions/${session.sessionId}`, { method: 'DELETE' }); } catch (_) {}
   if (evtSource) evtSource.close();
   stopRenderLoop();
+  if (els.queueHint) els.queueHint.hidden = true;
   setStatus('stopped');
   session = null;
 });
