@@ -20,30 +20,39 @@ async def run(session: Session) -> None:
     settings = get_settings()
     await session.emit(OverlayEvent(event="session_started", session_id=session.session_id))
 
-    try:
-        kind, _info = await youtube.classify(session.youtube_url)
-        session.kind = kind
-    except IngestionError as exc:
-        log.warning("session %s ingestion error: %s", session.session_id, exc)
-        await session.emit(
-            OverlayEvent(event="error", session_id=session.session_id, message=str(exc))
-        )
-        await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
-        return
-    except Exception as exc:
-        log.exception("session %s classify crashed: %s", session.session_id, exc)
-        await session.emit(
-            OverlayEvent(
-                event="error",
-                session_id=session.session_id,
-                message=f"Could not load YouTube URL: {exc}",
-            )
-        )
-        await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
-        return
-
     use_video = session.mode == IngestionMode.VIDEO
     use_transcript = session.mode == IngestionMode.TRANSCRIPT
+
+    if use_video:
+        # Direct-video mode hands the URL straight to Gemini, which fetches the
+        # video from Google's network. Skip the yt-dlp probe entirely so this
+        # mode stays immune to the YouTube 429 / bot blocks that break captions
+        # and audio from a data-center IP. Live detection falls back to the
+        # cheap URL-shape heuristic (video mode is recorded-only anyway).
+        session.kind = youtube.guess_kind_from_url(session.youtube_url)
+    else:
+        try:
+            kind, _info = await youtube.classify(session.youtube_url)
+            session.kind = kind
+        except IngestionError as exc:
+            log.warning("session %s ingestion error: %s", session.session_id, exc)
+            await session.emit(
+                OverlayEvent(event="error", session_id=session.session_id, message=str(exc))
+            )
+            await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
+            return
+        except Exception as exc:
+            log.exception("session %s classify crashed: %s", session.session_id, exc)
+            await session.emit(
+                OverlayEvent(
+                    event="error",
+                    session_id=session.session_id,
+                    message=f"Could not load YouTube URL: {exc}",
+                )
+            )
+            await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
+            return
+
     try:
         if use_video:
             if session.kind == StreamKind.LIVE:

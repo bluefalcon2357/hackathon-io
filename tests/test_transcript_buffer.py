@@ -134,7 +134,9 @@ def test_classify_rate_limit_error_is_actionable():
     )
     assert isinstance(err, NoCaptionsError)
     assert "429" in str(err)
-    assert "Audio mode" in str(err)
+    # Points at the mode that bypasses YouTube's rate limit, not Audio (which
+    # hits the same wall from this server's IP).
+    assert "Gemini video" in str(err)
 
 
 def test_classify_bot_wall_error_mentions_cookies():

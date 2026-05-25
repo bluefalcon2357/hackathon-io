@@ -169,13 +169,15 @@ def _classify_yt_dlp_error(stderr: str) -> NoCaptionsError:
     if "Sign in to confirm" in stderr or "bot" in stderr.lower():
         return NoCaptionsError(
             "YouTube is blocking this server's IP (bot check). "
-            "Mount a cookies.txt file and set YT_DLP_COOKIES to its path, "
-            "or switch to Audio mode."
+            "Use 'Full transcript · Gemini video' mode — it fetches the video "
+            "through Google instead of this server — or mount a cookies.txt file "
+            "and set YT_DLP_COOKIES."
         )
     if _RATE_LIMIT_RE.search(stderr):
         return NoCaptionsError(
             "YouTube rate-limited the caption endpoint (HTTP 429). "
-            "Wait a minute and retry, or switch to Audio mode."
+            "Use 'Full transcript · Gemini video' mode, which fetches the video "
+            "through Google and isn't affected by this server's rate limits."
         )
     return NoCaptionsError(f"yt-dlp could not fetch captions: {stderr[:300]}")
 
