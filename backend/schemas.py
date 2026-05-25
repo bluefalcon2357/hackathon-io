@@ -11,7 +11,6 @@ class StreamKind(str, Enum):
 
 class IngestionMode(str, Enum):
     AUDIO = "audio"
-    TRANSCRIPT = "transcript"
     VIDEO = "video"
 
 

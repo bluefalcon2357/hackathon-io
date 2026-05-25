@@ -193,6 +193,68 @@ async def test_video_mode_runs_extractor_and_emits_verdicts(stub_pipeline):
         manager.remove(session.session_id)
 
 
+@pytest.mark.asyncio
+async def test_video_mode_skips_ytdlp_classify(monkeypatch):
+    """Video mode must not invoke the yt-dlp probe — that's what keeps it immune
+    to the YouTube 429 that breaks captions/audio. Even if classify would fail,
+    the session must still produce verdicts."""
+    called = {"classify": False}
+
+    async def boom_classify(url):
+        called["classify"] = True
+        raise youtube.IngestionError("HTTP Error 429: Too Many Requests")
+
+    async def fake_extract_from_video(youtube_url, session_id):
+        return [
+            Claim(
+                claim_id="video:s:0:abcdef",
+                chunk_id="video:s",
+                text="A statement from the transcript.",
+                t_start=1.0,
+                t_end=3.0,
+                check_worthy=True,
+                confidence=0.9,
+                speaker="speaker_1",
+            )
+        ]
+
+    async def fake_search_claim(claim_text):
+        return SearchEvidence(source="google_search", snippet="ok", supports="supports")
+
+    async def fake_check_trusted(claim_text):
+        return SearchEvidence(source="trusted", snippet="ok", supports="unclear")
+
+    async def fake_adjudicate(claim, evidence):
+        return Verdict(
+            claim_id=claim.claim_id, status="green", summary="ok.", citations=evidence
+        )
+
+    monkeypatch.setattr(youtube, "classify", boom_classify)
+    monkeypatch.setattr(video_extractor, "extract_claims_from_video", fake_extract_from_video)
+    monkeypatch.setattr(search, "search_claim", fake_search_claim)
+    monkeypatch.setattr(trusted_source, "check_trusted", fake_check_trusted)
+    monkeypatch.setattr(verdict, "adjudicate", fake_adjudicate)
+
+    session = manager.create(
+        "https://www.youtube.com/watch?v=abc123", StreamKind.RECORDED,
+        mode=IngestionMode.VIDEO,
+    )
+    try:
+        await runner.run(session)
+        events = []
+        while not session.queue.empty():
+            events.append(session.queue.get_nowait())
+
+        kinds = [e.event for e in events]
+        assert called["classify"] is False, "video mode must not call yt-dlp classify"
+        assert "error" not in kinds
+        assert kinds.count("claim_detected") == 1
+        assert kinds.count("verdict") == 1
+        assert kinds[-1] == "session_ended"
+    finally:
+        manager.remove(session.session_id)
+
+
 @pytest.fixture
 def stub_live_fallback(monkeypatch):
     """Video mode on a livestream should fall back to the audio path."""
@@ -254,8 +316,10 @@ def stub_live_fallback(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_video_mode_falls_back_to_audio_on_livestream(stub_live_fallback):
+    # Video mode no longer probes via yt-dlp; live is detected from URL shape.
     session = manager.create(
-        "https://youtu.be/live", StreamKind.RECORDED, mode=IngestionMode.VIDEO,
+        "https://www.youtube.com/live/abcd1234", StreamKind.RECORDED,
+        mode=IngestionMode.VIDEO,
     )
     try:
         await runner.run(session)

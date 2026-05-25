@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from backend.schemas import (
     Claim,
     IngestionMode,
@@ -36,9 +39,10 @@ def test_session_request_default_mode_is_audio():
     assert r.mode == IngestionMode.AUDIO
 
 
-def test_session_request_accepts_transcript_mode():
-    r = SessionRequest(youtube_url="https://youtu.be/abc", mode="transcript")
-    assert r.mode == IngestionMode.TRANSCRIPT
+def test_session_request_rejects_removed_transcript_mode():
+    # Captions/transcript mode was removed; the value is no longer valid.
+    with pytest.raises(ValidationError):
+        SessionRequest(youtube_url="https://youtu.be/abc", mode="transcript")
 
 
 def test_session_request_accepts_video_mode():

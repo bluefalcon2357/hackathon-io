@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from typing import AsyncIterator
 
 from backend.agents import context, transcriber, video_extractor
@@ -83,8 +82,8 @@ async def _process_claim(
         )
     )
 
-    # The semaphore (transcript mode) bounds how many grounded checks run at
-    # once; without it (audio/video) the leaf timeouts already cap each task.
+    # The semaphore (video mode) bounds how many grounded checks run at once;
+    # without it (audio) the leaf timeouts already cap each task.
     if semaphore is not None:
         async with semaphore:
             final = await _resolve_verdict(claim)
@@ -236,79 +235,6 @@ async def run_session(
     finally:
         # Drain in-flight claim processing so all verdicts make it onto the
         # SSE stream before we emit session_ended.
-        if background_tasks:
-            await asyncio.gather(*background_tasks, return_exceptions=True)
-        context.reset_context(session_id)
-        await out_queue.put(OverlayEvent(event="session_ended", session_id=session_id))
-
-
-def statement_to_claim(chunk: Chunk, text: str) -> Claim | None:
-    """Wrap a complete-sentence transcript statement as a check-worthy claim.
-
-    Transcript mode checks the *entire* transcript, so we skip claim extraction
-    (which filters out everything that isn't a salient factual claim) and send
-    each statement straight into the verdict pipeline verbatim.
-    """
-    text = text.strip()
-    if not text:
-        return None
-    return Claim(
-        claim_id=f"{chunk.chunk_id}:{uuid.uuid4().hex[:6]}",
-        chunk_id=chunk.chunk_id,
-        text=text,
-        t_start=chunk.t_start,
-        t_end=chunk.t_end,
-        check_worthy=True,
-        confidence=1.0,
-        speaker=None,
-    )
-
-
-async def run_transcript_session(
-    *,
-    session_id: str,
-    statements: AsyncIterator[tuple[Chunk, str]],
-    out_queue: asyncio.Queue,
-    max_claims: int,
-) -> None:
-    """Drive transcript mode: verify *every* statement of the full transcript.
-
-    No claim-extraction filter — each buffered statement becomes a claim and
-    runs the full search → verdict pipeline. A semaphore bounds concurrency so
-    a long transcript doesn't fan out hundreds of grounded Gemini calls at once.
-    """
-    deduper = ClaimDeduper()
-    cache = VerdictCache()
-    semaphore = asyncio.Semaphore(get_settings().max_concurrent_checks)
-    claims_processed = 0
-    background_tasks: list[asyncio.Task] = []
-
-    try:
-        async for chunk, text in statements:
-            remaining = max_claims - claims_processed
-            if remaining <= 0:
-                log.info("session %s hit statement cap (%d)", session_id, max_claims)
-                break
-            claim = statement_to_claim(chunk, text)
-            if claim is None:
-                continue
-            try:
-                claims_processed += _dispatch_claims(
-                    session_id=session_id,
-                    claims=[claim],
-                    deduper=deduper,
-                    cache=cache,
-                    out_queue=out_queue,
-                    max_claims_remaining=remaining,
-                    background_tasks=background_tasks,
-                    semaphore=semaphore,
-                )
-            except Exception as exc:
-                log.exception("statement %s failed: %s", chunk.chunk_id, exc)
-                await out_queue.put(
-                    OverlayEvent(event="error", session_id=session_id, message=str(exc))
-                )
-    finally:
         if background_tasks:
             await asyncio.gather(*background_tasks, return_exceptions=True)
         context.reset_context(session_id)

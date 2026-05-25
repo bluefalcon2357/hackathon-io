@@ -6,9 +6,8 @@ import logging
 
 from backend.agents import root
 from backend.config import get_settings
-from backend.ingestion import live_hls, recorded, transcript, youtube
+from backend.ingestion import live_hls, recorded, youtube
 from backend.ingestion.chunker import cleanup_session
-from backend.ingestion.transcript import NoCaptionsError
 from backend.ingestion.youtube import IngestionError
 from backend.runtime.session_manager import Session
 from backend.schemas import IngestionMode, OverlayEvent, StreamKind
@@ -20,30 +19,38 @@ async def run(session: Session) -> None:
     settings = get_settings()
     await session.emit(OverlayEvent(event="session_started", session_id=session.session_id))
 
-    try:
-        kind, _info = await youtube.classify(session.youtube_url)
-        session.kind = kind
-    except IngestionError as exc:
-        log.warning("session %s ingestion error: %s", session.session_id, exc)
-        await session.emit(
-            OverlayEvent(event="error", session_id=session.session_id, message=str(exc))
-        )
-        await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
-        return
-    except Exception as exc:
-        log.exception("session %s classify crashed: %s", session.session_id, exc)
-        await session.emit(
-            OverlayEvent(
-                event="error",
-                session_id=session.session_id,
-                message=f"Could not load YouTube URL: {exc}",
-            )
-        )
-        await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
-        return
-
     use_video = session.mode == IngestionMode.VIDEO
-    use_transcript = session.mode == IngestionMode.TRANSCRIPT
+
+    if use_video:
+        # Direct-video mode hands the URL straight to Gemini, which fetches the
+        # video from Google's network. Skip the yt-dlp probe entirely so this
+        # mode stays immune to the YouTube 429 / bot blocks that break captions
+        # and audio from a data-center IP. Live detection falls back to the
+        # cheap URL-shape heuristic (video mode is recorded-only anyway).
+        session.kind = youtube.guess_kind_from_url(session.youtube_url)
+    else:
+        try:
+            kind, _info = await youtube.classify(session.youtube_url)
+            session.kind = kind
+        except IngestionError as exc:
+            log.warning("session %s ingestion error: %s", session.session_id, exc)
+            await session.emit(
+                OverlayEvent(event="error", session_id=session.session_id, message=str(exc))
+            )
+            await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
+            return
+        except Exception as exc:
+            log.exception("session %s classify crashed: %s", session.session_id, exc)
+            await session.emit(
+                OverlayEvent(
+                    event="error",
+                    session_id=session.session_id,
+                    message=f"Could not load YouTube URL: {exc}",
+                )
+            )
+            await session.emit(OverlayEvent(event="session_ended", session_id=session.session_id))
+            return
+
     try:
         if use_video:
             if session.kind == StreamKind.LIVE:
@@ -70,36 +77,7 @@ async def run(session: Session) -> None:
                     max_claims=settings.max_statements_per_session,
                 )
 
-        elif use_transcript:
-            try:
-                prepared = await transcript.prepare_statements(
-                    session.youtube_url, session.session_id
-                )
-            except NoCaptionsError as exc:
-                log.warning(
-                    "session %s caption fetch failed, falling back to audio: %s",
-                    session.session_id, exc,
-                )
-                await session.emit(
-                    OverlayEvent(
-                        event="error",
-                        session_id=session.session_id,
-                        message=f"{exc} Falling back to Audio mode.",
-                    )
-                )
-                use_transcript = False
-            else:
-                statements = transcript.stream_statements(
-                    prepared, session.session_id
-                )
-                await root.run_transcript_session(
-                    session_id=session.session_id,
-                    statements=statements,
-                    out_queue=session.queue,
-                    max_claims=settings.max_statements_per_session,
-                )
-
-        if not (use_video or use_transcript):
+        if not use_video:
             if session.kind == StreamKind.LIVE:
                 chunks = live_hls.stream_live(
                     session.youtube_url, session.session_id, settings.chunk_seconds

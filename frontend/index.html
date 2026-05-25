@@ -12,9 +12,8 @@
     <form id="session-form">
       <input id="url" type="url" placeholder="Paste a YouTube URL (recorded or live)" required />
       <select id="mode" title="How the video gets processed">
-        <option value="transcript">Full transcript · captions (most accurate)</option>
-        <option value="audio">Audio fragments</option>
-        <option value="video">Full transcript · Gemini video (no captions)</option>
+        <option value="video">Direct video · Gemini (best for recorded)</option>
+        <option value="audio">Audio fragments (experimental · livestreams)</option>
       </select>
       <button type="submit">Start</button>
       <button type="button" id="stop">Stop</button>
