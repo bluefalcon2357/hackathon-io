@@ -76,6 +76,30 @@ def test_parse_claims_handles_bad_timestamps():
     assert claims[0].t_end == 0.0
 
 
+def test_parse_claims_accepts_mmss_timestamps():
+    raw = '{"claims": [{"text": "X.", "t_start": "01:30", "t_end": "01:35"}]}'
+    claims = _parse_claims(raw, session_id="s1")
+    assert len(claims) == 1
+    assert claims[0].t_start == 90.0
+    assert claims[0].t_end == 95.0
+
+
+def test_parse_claims_accepts_hhmmss_timestamps():
+    raw = '{"claims": [{"text": "X.", "t_start": "01:02:03", "t_end": "01:02:05"}]}'
+    claims = _parse_claims(raw, session_id="s1")
+    assert len(claims) == 1
+    assert claims[0].t_start == 3723.0
+    assert claims[0].t_end == 3725.0
+
+
+def test_parse_claims_defaults_t_end_to_t_start_for_clock_strings():
+    raw = '{"claims": [{"text": "X.", "t_start": "02:00"}]}'
+    claims = _parse_claims(raw, session_id="s1")
+    assert len(claims) == 1
+    assert claims[0].t_start == 120.0
+    assert claims[0].t_end == 120.0
+
+
 @pytest.fixture
 def stub_pipeline(monkeypatch):
     async def fake_classify(url):

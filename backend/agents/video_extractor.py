@@ -25,16 +25,20 @@ _VIDEO_PROMPT = """You are a fact-checking assistant. Watch this YouTube video
 and extract every verifiable factual claim spoken by the speakers. Skip
 opinions, hypotheticals, rhetorical questions, and pure narration.
 
-For each claim, include the time range in seconds from the start of the video
-when the claim is spoken.
+For each claim, report the time range when it is spoken as timestamps on the
+video's own playback clock, in MM:SS format (use HH:MM:SS for videos longer
+than an hour). t_start is the moment the speaker begins the claim and t_end is
+the moment they finish it; the timestamps must line up with when the words are
+actually heard, all the way through long videos — do not bunch every claim near
+the start.
 
 Return JSON ONLY in this shape:
 {
   "claims": [
     {
       "text": "<the verbatim claim>",
-      "t_start": <float seconds>,
-      "t_end": <float seconds>,
+      "t_start": "MM:SS",
+      "t_end": "MM:SS",
       "speaker": "speaker_1",
       "check_worthy": true,
       "confidence": 0.0-1.0
@@ -95,6 +99,35 @@ async def extract_claims_from_video(
     return _parse_claims(response.text or "", session_id)
 
 
+def _to_seconds(value: object) -> float | None:
+    """Coerce a timestamp into seconds.
+
+    Accepts raw seconds (int/float or a numeric string) and clock strings in
+    ``MM:SS`` or ``HH:MM:SS`` form. Returns ``None`` for anything unparseable so
+    the caller can fall back to a default.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    s = str(value).strip()
+    if not s:
+        return None
+    if ":" in s:
+        try:
+            parts = [float(p) for p in s.split(":")]
+        except ValueError:
+            return None
+        seconds = 0.0
+        for part in parts:
+            seconds = seconds * 60 + part
+        return seconds
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def _parse_claims(raw: str, session_id: str) -> list[Claim]:
     """Pure JSON-to-Claim parsing, factored out so tests can exercise it."""
     try:
@@ -108,11 +141,12 @@ def _parse_claims(raw: str, session_id: str) -> list[Claim]:
         text = (item.get("text") or "").strip()
         if not text:
             continue
-        try:
-            t_start = float(item.get("t_start", 0.0))
-            t_end = float(item.get("t_end", t_start))
-        except (TypeError, ValueError):
-            t_start, t_end = 0.0, 0.0
+        t_start = _to_seconds(item.get("t_start"))
+        if t_start is None:
+            t_start = 0.0
+        t_end = _to_seconds(item.get("t_end"))
+        if t_end is None:
+            t_end = t_start
         claims.append(
             Claim(
                 claim_id=f"video:{session_id}:{i}:{uuid.uuid4().hex[:6]}",

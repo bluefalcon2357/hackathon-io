@@ -1,10 +1,16 @@
 // Live Reality Fact-Check Overlay — frontend driver.
 // 1. POST /api/sessions with a YouTube URL.
 // 2. Mount the YouTube IFrame Player with the resolved video id.
-// 3. Open SSE to /api/sessions/{id}/stream; buffer events.
-// 4. 100ms RAF loop renders overlay pills filtered by player time.
+// 3. Open SSE to /api/sessions/{id}/stream; buffer claims keyed by id.
+// 4. 100ms loop reveals each claim in the log + overlay once playback reaches
+//    its timestamp, so the sidebar stays in sync with the video instead of
+//    dumping every claim the moment the backend emits it.
 
+// How long an overlay pill lingers past the claim's end time.
 const DISPLAY_HOLD_SECONDS = 8;
+// Reveal a claim this many seconds before its start time. 0 = show it exactly
+// when the statement is spoken; bump up to surface claims slightly ahead.
+const REVEAL_LEAD_SECONDS = 0;
 
 const els = {
   form: document.getElementById('session-form'),
@@ -20,7 +26,7 @@ let ytPlayer = null;
 let ytApiReady = false;
 let pendingVideoId = null;
 let session = null;        // { sessionId, kind, startedAt }
-let events = [];           // verdict events with t_start/t_end
+let claims = new Map();    // claim_id -> { text, tStart, tEnd, status, summary, hasVerdict, revealed, li }
 let evtSource = null;
 let renderTimer = null;
 let sawError = false;
@@ -85,7 +91,7 @@ async function startSession(url) {
   const body = await res.json();
 
   session = { sessionId: body.session_id, kind: body.kind, startedAt: Date.now() };
-  events = [];
+  claims = new Map();
   sawError = false;
   els.claimList.innerHTML = '';
   els.overlay.innerHTML = '';
@@ -101,15 +107,17 @@ function openStream() {
 
   evtSource.addEventListener('claim_detected', (e) => {
     const data = JSON.parse(e.data);
-    events.push({ kind: 'pending', ...data });
-    appendToLog(data, 'yellow', '(checking…)');
+    upsertClaim(data.claim, { status: 'yellow', summary: '(checking…)', hasVerdict: false });
   });
 
   evtSource.addEventListener('verdict', (e) => {
     const data = JSON.parse(e.data);
     const status = data.verdict?.status ?? 'yellow';
-    events.push({ kind: 'verdict', status, ...data });
-    appendToLog(data, status, data.verdict?.summary ?? '');
+    upsertClaim(data.claim, {
+      status,
+      summary: data.verdict?.summary ?? '',
+      hasVerdict: true,
+    });
   });
 
   evtSource.addEventListener('error', (e) => {
@@ -140,21 +148,49 @@ function appendErrorToLog(message) {
   els.claimList.prepend(li);
 }
 
-function appendToLog(data, status, summary) {
-  const li = document.createElement('li');
-  li.className = status;
-  const t = data.claim?.t_start ?? data.t_start ?? 0;
+// Buffer a claim by id. The render loop decides *when* it appears; the backend
+// may stream a claim_detected then a verdict (or just a verdict, when cached)
+// for the same id, so we merge into one entry instead of two log rows.
+function upsertClaim(claim, { status, summary, hasVerdict }) {
+  if (!claim) return;
+  const id = claim.claim_id;
+  let entry = claims.get(id);
+  if (!entry) {
+    entry = {
+      text: claim.text ?? '',
+      tStart: claim.t_start ?? 0,
+      tEnd: claim.t_end ?? claim.t_start ?? 0,
+      status,
+      summary,
+      hasVerdict,
+      revealed: false,
+      li: null,
+    };
+    claims.set(id, entry);
+  } else if (hasVerdict || !entry.hasVerdict) {
+    // A verdict always wins; a late claim_detected must not stomp a verdict.
+    entry.status = status;
+    entry.summary = summary;
+    entry.hasVerdict = entry.hasVerdict || hasVerdict;
+  }
+  if (entry.revealed) renderLogRow(entry);
+}
+
+function renderLogRow(entry) {
+  const li = entry.li ?? document.createElement('li');
+  li.className = entry.status;
   li.innerHTML = `
-    <span class="timestamp">${formatTime(t)}</span>
-    <span class="text">${escapeHtml(data.claim?.text ?? '')}</span>
-    <span class="summary">${escapeHtml(summary)}</span>
+    <span class="timestamp">${formatTime(entry.tStart)}</span>
+    <span class="text">${escapeHtml(entry.text)}</span>
+    <span class="summary">${escapeHtml(entry.summary)}</span>
   `;
-  els.claimList.prepend(li);
+  entry.li = li;
+  return li;
 }
 
 function startRenderLoop() {
   stopRenderLoop();
-  renderTimer = setInterval(renderOverlay, 100);
+  renderTimer = setInterval(renderTick, 100);
 }
 
 function stopRenderLoop() {
@@ -169,22 +205,42 @@ function currentTime() {
   try { return ytPlayer?.getCurrentTime?.() ?? 0; } catch (_) { return 0; }
 }
 
-function renderOverlay() {
+function renderTick() {
   const t = currentTime();
-  const active = events.filter((e) => {
-    const t0 = e.claim?.t_start ?? e.t_start ?? 0;
-    const t1 = (e.claim?.t_end ?? e.t_end ?? t0) + DISPLAY_HOLD_SECONDS;
-    return t >= t0 && t <= t1;
-  });
+  revealDueClaims(t);
+  renderOverlay(t);
+}
+
+// Reveal claims in the sidebar once playback reaches their start time, oldest
+// first so the newest spoken claim ends up on top. A claim the backend has
+// already verdicted simply shows its final status the moment it's revealed.
+function revealDueClaims(t) {
+  const due = [];
+  for (const entry of claims.values()) {
+    if (!entry.revealed && entry.tStart <= t + REVEAL_LEAD_SECONDS) due.push(entry);
+  }
+  due.sort((a, b) => a.tStart - b.tStart);
+  for (const entry of due) {
+    els.claimList.prepend(renderLogRow(entry));
+    entry.revealed = true;
+  }
+}
+
+function renderOverlay(t) {
+  const active = [];
+  for (const entry of claims.values()) {
+    if (!entry.revealed) continue;
+    if (t >= entry.tStart && t <= entry.tEnd + DISPLAY_HOLD_SECONDS) active.push(entry);
+  }
+  active.sort((a, b) => a.tStart - b.tStart);
 
   els.overlay.innerHTML = '';
-  for (const e of active.slice(-3)) {
-    const status = e.kind === 'verdict' ? e.status : 'yellow';
+  for (const entry of active.slice(-3)) {
     const pill = document.createElement('div');
-    pill.className = `pill ${status}`;
+    pill.className = `pill ${entry.status}`;
     pill.innerHTML = `
       <span class="dot"></span>
-      <span class="claim-text">${escapeHtml(e.claim?.text ?? '')}</span>
+      <span class="claim-text">${escapeHtml(entry.text)}</span>
     `;
     els.overlay.appendChild(pill);
   }
